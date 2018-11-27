@@ -36,11 +36,6 @@ var (
 	sourceCommit string
 )
 
-var (
-	podName         = os.Getenv(common.EnvPodName)
-	logPathTemplate = ""
-)
-
 func init() {
 	if version == "" {
 		version = "Unknown"
@@ -87,6 +82,10 @@ func main() {
 	if err != nil {
 		logger.Fatal(err)
 	}
+
+	logPathTemplate := ""
+
+	podName := os.Getenv(common.EnvPodName)
 
 	jobName := os.Getenv(common.EnvJobName)
 	productName, runID, err := splitJobName(jobName)
@@ -183,7 +182,7 @@ func main() {
 	}
 }
 
-// splitJobName breaks down a jonName string adhering to a known format into its composing elements.
+// splitJobName breaks down a jobName string adhering to a known format into its composing elements.
 //
 // Note: It is structured as a variable instead of a normal function in order to allow closure to essentially create a
 // locally scoped regular expression that gets compiled exactly once at program initialization time instead of panicking
