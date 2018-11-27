@@ -35,5 +35,5 @@ clean:
 mod: go.sum
 	go mod download
 
-go.sum: go.mod
+go.sum: go.mod ${SRC}
 	go mod tidy

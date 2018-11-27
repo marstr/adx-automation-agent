@@ -55,7 +55,12 @@ func TryGetSystemConfig(key string) (value string, exists bool) {
 		return "", false
 	}
 
-	configmap, err := clientset.CoreV1().ConfigMaps(common.GetCurrentNamespace("default")).Get(common.SystemConfigMapName, metav1.GetOptions{})
+	namespace := "default"
+	if namespaceCandidate, err := common.GetCurrentNamespace(); err == nil {
+		namespace = namespaceCandidate
+	}
+
+	configmap, err := clientset.CoreV1().ConfigMaps(namespace).Get(common.SystemConfigMapName, metav1.GetOptions{})
 	if err != nil {
 		return "", false
 	}
@@ -71,7 +76,12 @@ func TryGetSecretInBytes(secret string, key string) (value []byte, exists bool) 
 		return nil, false
 	}
 
-	sec, err := clientset.CoreV1().Secrets(common.GetCurrentNamespace("default")).Get(secret, metav1.GetOptions{})
+	namespace := "default"
+	if namespaceCandidate, err := common.GetCurrentNamespace(); err == nil {
+		namespace = namespaceCandidate
+	}
+
+	sec, err := clientset.CoreV1().Secrets(namespace).Get(secret, metav1.GetOptions{})
 	if err != nil {
 		return nil, false
 	}

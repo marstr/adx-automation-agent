@@ -19,12 +19,11 @@ const (
 )
 
 var (
-	namespace = common.GetCurrentNamespace("a01-prod")
 	clientset = kubeutils.TryCreateKubeClientset()
 )
 
 // WaitTasks blocks the caller till the job finishes.
-func WaitTasks(taskBroker *schedule.TaskBroker, run *models.Run) error {
+func WaitTasks(namespace string, taskBroker *schedule.TaskBroker, run *models.Run) error {
 	logrus.Info("Begin monitoring task execution ...")
 
 	ch, err := taskBroker.GetChannel()

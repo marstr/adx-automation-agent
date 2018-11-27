@@ -21,6 +21,7 @@ import (
 )
 
 type (
+	// ErrNoExecutable is returned when a file that was expected to be executed is not found.
 	ErrNoExecutable string
 )
 

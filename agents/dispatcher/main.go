@@ -22,12 +22,9 @@ import (
 )
 
 var (
-	taskBroker    = schedule.CreateInClusterTaskBroker()
-	namespace     = common.GetCurrentNamespace("a01-prod")
-	droidMetadata = models.ReadDroidMetadata(common.PathMetadataYml)
-	clientset     = kubeutils.TryCreateKubeClientset()
-	version       = "Unknown"
-	sourceCommit  = "Unknown"
+	clientset    = kubeutils.TryCreateKubeClientset()
+	version      = "Unknown"
+	sourceCommit = "Unknown"
 )
 
 // main defines the logic of A01 dispatcher
@@ -39,12 +36,34 @@ func main() {
 	logrus.Infof("A01 Droid Dispatcher.\nVersion: %s.\nCommit: %s.\n", version, sourceCommit)
 	logrus.Infof("Pod name: %s", os.Getenv(common.EnvPodName))
 
+	taskBroker, err := schedule.CreateInClusterTaskBroker()
+	if err != nil {
+		logrus.Fatal(err)
+	}
+
+	namespace := "a01-prod"
+	if namespaceCandidate, err := common.GetCurrentNamespace(); err == nil {
+		namespace = namespaceCandidate
+	} else {
+		logrus.Warnf("no namespace found, falling back to default %q", namespace)
+	}
+
+	droidMetadata, err := models.ReadDroidMetadata(common.PathMetadataYml)
+	switch {
+	case err == nil:
+		// Intentionally Left Blank
+	case os.IsNotExist(err):
+		logrus.Infof("Droid metadata not found at %s, assuming defaults", common.PathMetadataYml)
+	default:
+		logrus.Fatal(err)
+	}
+
 	var pRunID *int
 	pRunID = flag.Int("run", -1, "The run ID")
 	flag.Parse()
 
 	if *pRunID == -1 {
-		logrus.Fatal("Missing runID")
+		logrus.Fatal(`Missing required parameter "run"`)
 	}
 
 	// query the run and then update the product name in the details
@@ -86,7 +105,7 @@ func main() {
 		jobName := run.Details[common.KeyJobName]
 
 		// creates a kubernete job to manage test droid
-		jobDef, err := createTaskJob(run, jobName)
+		jobDef, err := createTaskJob(droidMetadata, namespace, jobName, run)
 		if err != nil {
 			logrus.Fatal(err.Error())
 		}
@@ -108,7 +127,7 @@ func main() {
 
 	if run.Status == common.RunStatusRunning {
 		// begin monitoring the job status till the end
-		monitor.WaitTasks(taskBroker, run)
+		monitor.WaitTasks(namespace, taskBroker, run)
 
 		secret, err := kubeutils.TryCreateKubeClientset().
 			CoreV1().
@@ -146,7 +165,7 @@ func main() {
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 // Kubernetes JOB
 
-func createTaskJob(run *models.Run, jobName string) (job *batchv1.Job, err error) {
+func createTaskJob(droidMetadata *models.DroidMetadata, namespace, jobName string, run *models.Run) (job *batchv1.Job, err error) {
 	client, err := kubeutils.CreateKubeClientset()
 	if err != nil {
 		return nil, err
@@ -170,9 +189,9 @@ func createTaskJob(run *models.Run, jobName string) (job *batchv1.Job, err error
 				},
 				Spec: corev1.PodSpec{
 					ServiceAccountName: "test-runner-robot",
-					Containers:         getContainerSpecs(run, jobName),
+					Containers:         getContainerSpecs(droidMetadata, run, jobName),
 					ImagePullSecrets:   getImagePullSource(run),
-					Volumes:            getVolumes(run),
+					Volumes:            getVolumes(droidMetadata, run),
 					RestartPolicy:      corev1.RestartPolicyNever,
 				},
 			},
@@ -190,7 +209,7 @@ func getLabels(run *models.Run) map[string]string {
 	return labels
 }
 
-func getVolumes(run *models.Run) (volumes []corev1.Volume) {
+func getVolumes(droidMetadata *models.DroidMetadata, run *models.Run) (volumes []corev1.Volume) {
 	volumes = []corev1.Volume{
 		{
 			Name: common.StorageVolumeNameTools,
@@ -242,11 +261,11 @@ func getImagePullSource(run *models.Run) []corev1.LocalObjectReference {
 	return []corev1.LocalObjectReference{{Name: run.Settings[common.KeyImagePullSecret].(string)}}
 }
 
-func getContainerSpecs(run *models.Run, jobName string) (containers []corev1.Container) {
+func getContainerSpecs(droidMetadata *models.DroidMetadata, run *models.Run, jobName string) (containers []corev1.Container) {
 	c := corev1.Container{
 		Name:    "main",
 		Image:   run.Settings[common.KeyImageName].(string),
-		Env:     getEnvironmentVariableDef(run, jobName),
+		Env:     getEnvironmentVariableDef(droidMetadata, run, jobName),
 		Command: []string{common.PathMountTools + "/a01droid"},
 	}
 
@@ -276,7 +295,7 @@ func getContainerSpecs(run *models.Run, jobName string) (containers []corev1.Con
 	return []corev1.Container{c}
 }
 
-func getEnvironmentVariableDef(run *models.Run, jobName string) []corev1.EnvVar {
+func getEnvironmentVariableDef(droidMetadata *models.DroidMetadata, run *models.Run, jobName string) []corev1.EnvVar {
 	result := []corev1.EnvVar{
 		{
 			Name: common.EnvPodName,

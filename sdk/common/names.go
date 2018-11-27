@@ -2,6 +2,7 @@ package common
 
 import (
 	"io/ioutil"
+	"strings"
 )
 
 // Defines well-known names in the A01 system
@@ -43,12 +44,13 @@ const (
 	ProductSecretKeyLogPathTemplate = "log.path.template"
 )
 
-// GetCurrentNamespace returns the namespace this Pod belongs to. If it fails
-// to resolve the name, it uses the fallback name.
-func GetCurrentNamespace(fallback string) string {
-	if content, err := ioutil.ReadFile(PathKubeNamespace); err == nil {
-		return string(content)
+// GetCurrentNamespace returns the namespace this Pod belongs to. Otherwise, it returns the empty string and a non-nil
+// error.
+func GetCurrentNamespace() (string, error) {
+	contents, err := ioutil.ReadFile(PathKubeNamespace)
+	if err != nil {
+		return "", err
 	}
 
-	return fallback
+	return strings.TrimSpace(string(contents)), nil
 }
