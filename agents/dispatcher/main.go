@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/base32"
 	"flag"
@@ -32,21 +33,24 @@ var (
 // status of the queue. When it determines all the tasks are completed, the dispatcher will trigger a reporting and then
 // exit.
 func main() {
-	logrus.Infof("A01 Droid Dispatcher.\nVersion: %s.\nCommit: %s.\n", version, sourceCommit)
-	logrus.Infof("Pod name: %s", os.Getenv(common.EnvPodName))
+	ctx := context.Background()
+	logger := logrus.StandardLogger()
+
+	logger.Infof("A01 Droid Dispatcher.\nVersion: %s.\nCommit: %s.\n", version, sourceCommit)
+	logger.Infof("Pod name: %s", os.Getenv(common.EnvPodName))
 
 	clientset, _ := kubeutils.CreateKubeClientset()
 
 	taskBroker, err := schedule.CreateInClusterTaskBroker()
 	if err != nil {
-		logrus.Fatal(err)
+		logger.Fatal(err)
 	}
 
 	namespace := "a01-prod"
 	if namespaceCandidate, err := common.GetCurrentNamespace(); err == nil {
 		namespace = namespaceCandidate
 	} else {
-		logrus.Warnf("no namespace found, falling back to default %q", namespace)
+		logger.Warnf("no namespace found, falling back to default %q", namespace)
 	}
 
 	droidMetadata, err := models.ReadDroidMetadata(common.PathMetadataYml)
@@ -54,9 +58,9 @@ func main() {
 	case err == nil:
 		// Intentionally Left Blank
 	case os.IsNotExist(err):
-		logrus.Infof("Droid metadata not found at %s, assuming defaults", common.PathMetadataYml)
+		logger.Infof("Droid metadata not found at %s, assuming defaults", common.PathMetadataYml)
 	default:
-		logrus.Fatal(err)
+		logger.Fatal(err)
 	}
 
 	var pRunID *int
@@ -64,32 +68,40 @@ func main() {
 	flag.Parse()
 
 	if *pRunID == -1 {
-		logrus.Fatal(`Missing required parameter "run"`)
+		logger.Fatal(`Missing required parameter "run"`)
 	}
 
 	// query the run and then update the product name in the details
 	run, err := models.QueryRun(*pRunID)
 	if err != nil {
-		logrus.Fatal("fail to query the run")
+		logger.Fatal("fail to query the run")
 	}
 
 	if run.Status == common.RunStatusInitialized || len(run.Status) == 0 {
 		run.Details[common.KeyProduct] = droidMetadata.Product
 		run, err = run.SubmitChange()
 		if err != nil {
-			logrus.Fatal("fail to update the run: ", err)
+			logger.Fatal("fail to update the run: ", err)
 		}
 
-		logrus.Info(run)
+		logger.Info(run)
 
 		// generate a job name. the name will be used through out the remaining
 		// session to identify the group of operations and resources
 		jobName := fmt.Sprintf("%s-%d-%s", droidMetadata.Product, run.ID, getRandomString())
 
-		// publish tasks to the task broker which will establish a worker queue
-		err = taskBroker.PublishTasks(jobName, run.QueryTests())
+		logger.Debugf("query string is %q", run.Settings[common.KeyTestQuery])
+
+		tasks, err := run.QueryTests(ctx)
 		if err != nil {
-			logrus.Fatal("Fail to publish tasks to the task broker:", err)
+			logger.Fatal(err)
+		}
+		logger.Infof("found %d tasks", len(tasks))
+
+		// publish tasks to the task broker which will establish a worker queue
+		err = taskBroker.PublishTasks(jobName, tasks)
+		if err != nil {
+			logger.Fatal("Fail to publish tasks to the task broker:", err)
 		}
 		defer taskBroker.Close()
 
@@ -98,7 +110,7 @@ func main() {
 		run.Details[common.KeyJobName] = jobName
 		run, err = run.SubmitChange()
 		if err != nil {
-			logrus.Fatal("fail to update the run: ", err)
+			logger.Fatal("fail to update the run: ", err)
 		}
 	}
 
@@ -108,7 +120,7 @@ func main() {
 		// creates a kubernete job to manage test droid
 		jobDef, err := createTaskJob(droidMetadata, namespace, jobName, run)
 		if err != nil {
-			logrus.Fatal(err.Error())
+			logger.Fatal(err.Error())
 		}
 
 		// ignore this error for now. This API's latest version seems to sending
@@ -116,13 +128,13 @@ func main() {
 		clientset.BatchV1().Jobs(namespace).Create(jobDef)
 		_, err = clientset.BatchV1().Jobs(namespace).Get(jobDef.Name, metav1.GetOptions{})
 		if err != nil {
-			logrus.Fatal(err.Error())
+			logger.Fatal(err.Error())
 		}
 
 		run.Status = common.RunStatusRunning
 		run, err = run.SubmitChange()
 		if err != nil {
-			logrus.Fatal("fail to update the run: ", err)
+			logger.Fatal("fail to update the run: ", err)
 		}
 	}
 
@@ -135,30 +147,30 @@ func main() {
 			Secrets(namespace).
 			Get(run.GetSecretName(droidMetadata), metav1.GetOptions{})
 		if err != nil {
-			logrus.Fatal("Failed to get the kubernetes secret: ", err)
+			logger.Fatal("Failed to get the kubernetes secret: ", err)
 		}
 
-		reportutils.RefreshPowerBI(run, run.GetSecretName(droidMetadata))
+		reportutils.RefreshPowerBI(logger, run, run.GetSecretName(droidMetadata))
 
 		owners := string(secret.Data["owners"])
 		templateURL, ok := secret.Data["email.path.template"]
 		if ok {
-			reportutils.Report(run, strings.Split(owners, ","), string(templateURL))
+			reportutils.Report(logger, run, strings.Split(owners, ","), string(templateURL))
 		} else {
-			logrus.Warn("Failed to get the `email.path.template` value from the kubernetes secret. A generic template will be used instead")
-			reportutils.Report(run, strings.Split(owners, ","), "")
+			logger.Warn("Failed to get the `email.path.template` value from the kubernetes secret. A generic template will be used instead")
+			reportutils.Report(logger, run, strings.Split(owners, ","), "")
 		}
 
 		run.Status = common.RunStatusCompleted
 		run, err = run.SubmitChange()
 		if err != nil {
-			logrus.Fatal("fail to update the run: ", err)
+			logger.Fatal("fail to update the run: ", err)
 		}
 	}
 
 	if run.Status == common.RunStatusCompleted {
-		logrus.Info(run)
-		logrus.Infof("The run %d was already completed.", run.ID)
+		logger.Info(run)
+		logger.Infof("The run %d was already completed.", run.ID)
 		os.Exit(0)
 	}
 }

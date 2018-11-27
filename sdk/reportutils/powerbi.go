@@ -3,7 +3,6 @@ package reportutils
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
 	"net/http"
 
 	"github.com/Azure/adx-automation-agent/sdk/common"
@@ -12,12 +11,13 @@ import (
 )
 
 // RefreshPowerBI requests the PowerBI service to refresh a data set
-func RefreshPowerBI(run *models.Run, product string) {
+func RefreshPowerBI(logger *logrus.Logger, run *models.Run, product string) {
+	const reportEndpoint = "http://" + common.DNSNameReportService + "/report"
+
 	if !run.IsOfficial() {
-		logrus.Info("Skip PowerBI refresh: run is not official")
+		logger.Info("skip PowerBI refresh: run is not official")
 		return
 	}
-	logrus.Info("sending PowerBI refresh request...")
 
 	content := map[string]interface{}{
 		"product": product,
@@ -25,29 +25,29 @@ func RefreshPowerBI(run *models.Run, product string) {
 	}
 	body, err := json.Marshal(content)
 	if err != nil {
-		logrus.Info("Fail to marshal JSON during request refreshing PowerBI.")
+		logger.Errorf("failed to marshal JSON before refreshing PowerBI: %v", err)
 		return
 	}
 
 	req, err := http.NewRequest(
 		http.MethodPost,
-		fmt.Sprintf("http://%s/report", common.DNSNameReportService),
+		reportEndpoint,
 		bytes.NewBuffer(body))
 	if err != nil {
-		logrus.Info(fmt.Sprintf("Fail to create request to refresh PowerBI: %v", err))
+		logger.Errorf("fail to create request to refresh PowerBI: %v", err)
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		logrus.Info(fmt.Sprintf("Fail to send request to PowerBI service: %v", err))
+		logger.Errorf("Fail to send request to PowerBI service: %v", err)
 		return
 	}
 
-	if resp.StatusCode != http.StatusOK {
-		logrus.Info(fmt.Sprintf("The request may have failed. Status code: %d", resp.StatusCode))
-		return
+	if resp.StatusCode == http.StatusOK {
+		logger.Info("PowerBI refresh requested")
+	} else {
+		logger.Errorf("unexpected response code while sending report: %d", resp.StatusCode)
 	}
-	logrus.Info("Finished sending PowerBI refresh request")
 }

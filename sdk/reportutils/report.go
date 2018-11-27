@@ -3,7 +3,6 @@ package reportutils
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -16,8 +15,8 @@ import (
 var httpClient = &http.Client{}
 
 // Report method requests the email service to send emails
-func Report(run *models.Run, receivers []string, templateURL string) {
-	logrus.Info("Sending report...")
+func Report(logger *logrus.Logger, run *models.Run, receivers []string, templateURL string) {
+	const reportEndpoint = "http://" + common.DNSNameEmailService + "/report"
 
 	// Emails should not be sent to all the team if the run was not set with a remark
 	// Only acceptable remark for sending emails to whole team is 'official'
@@ -37,31 +36,34 @@ func Report(run *models.Run, receivers []string, templateURL string) {
 
 		body, err := json.Marshal(content)
 		if err != nil {
-			logrus.Info("Fail to marshal JSON during request sending email.")
+			logger.Errorf("fail to marshal JSON during request sending email: %v", err)
 			return
 		}
 
-		logrus.Info(string(body))
+		logger.Debugf("report message body:\n%s", body)
 		req, err := http.NewRequest(
 			http.MethodPost,
-			fmt.Sprintf("http://%s/report", common.DNSNameEmailService),
+			reportEndpoint,
 			bytes.NewBuffer(body))
 		if err != nil {
-			logrus.Info("Fail to create request to requesting email.")
+			logger.Errorf("fail to create request to requesting email: %v", err)
 			return
 		}
 		req.Header.Set("Content-Type", "application/json")
 
 		resp, err := httpClient.Do(req)
 		if err != nil {
-			logrus.Info("Fail to send request to email service.")
+			logger.Error("fail to send request to email service: ", err)
 			return
 		}
 
-		if resp.StatusCode != http.StatusOK {
-			logrus.Info("The request may have failed.")
+		switch resp.StatusCode {
+		case http.StatusOK:
+			logger.Info("report sent")
+		default:
+			logger.Errorf("unexpected response code while sending report: %d", resp.StatusCode)
 		}
 	} else {
-		logrus.Info("Skip sending report")
+		logger.Warn("no recipients to send the report")
 	}
 }

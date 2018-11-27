@@ -2,6 +2,7 @@ package models
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -61,21 +62,19 @@ func (run *Run) SubmitChange() (*Run, error) {
 }
 
 // QueryTests returns the list of test tasks based on the query string
-func (run *Run) QueryTests() []TaskSetting {
-	logrus.Infof("Expecting script %s.", common.PathScriptGetIndex)
-	content, err := exec.Command(common.PathScriptGetIndex).Output()
+func (run *Run) QueryTests(ctx context.Context) ([]TaskSetting, error) {
+	content, err := exec.CommandContext(ctx, common.PathScriptGetIndex).Output()
 	if err != nil {
-		panic(err.Error())
+		return nil, err
 	}
 
 	var input []TaskSetting
 	err = json.Unmarshal(content, &input)
 	if err != nil {
-		panic(err.Error())
+		return nil, err
 	}
 
 	if query, ok := run.Settings[common.KeyTestQuery]; ok {
-		logrus.Info(fmt.Sprintf("Query string is '%s'", query))
 		result := make([]TaskSetting, 0, len(input))
 		for _, test := range input {
 			matched, err := regexp.MatchString(query.(string), test.Classifier["identifier"])
@@ -100,7 +99,7 @@ func (run *Run) QueryTests() []TaskSetting {
 		input = result
 	}
 
-	return input
+	return input, nil
 }
 
 // String creates a formatted summary about a Run.
