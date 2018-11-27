@@ -1,11 +1,15 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -16,79 +20,89 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-var (
-	taskBroker      = schedule.CreateInClusterTaskBroker()
-	jobName         = os.Getenv(common.EnvJobName)
-	podName         = os.Getenv(common.EnvPodName)
-	runID           = strings.Split(jobName, "-")[1] // the job name MUST follows the <product>-<runID>-<random ID>
-	productName     = strings.Split(jobName, "-")[0] // the job name MUST follows the <product>-<runID>-<random ID>
-	logPathTemplate = ""
-	version         = "Unknown"
-	sourceCommit    = "Unknown"
+type (
+	ErrNoExecutable string
 )
 
-func ckEnvironment() {
+func (e ErrNoExecutable) Error() string {
+	return fmt.Sprintf("did not find executable %s", string(e))
+}
+
+// metadata about this executable. These values should be populated using the flag:
+//     -ldflags "-X github.com/Azure/adx-automation-agents/main.version={your value}"`
+var (
+	version      string
+	sourceCommit string
+)
+
+var (
+	podName         = os.Getenv(common.EnvPodName)
+	logPathTemplate = ""
+)
+
+func init() {
+	if version == "" {
+		version = "Unknown"
+	}
+
+	if sourceCommit == "" {
+		sourceCommit = "Unknown"
+	}
+}
+
+func ckEnvironment() error {
 	required := []string{common.EnvKeyInternalCommunicationKey, common.EnvJobName}
 
+	missing := make([]string, 0, len(required))
+
 	for _, r := range required {
-		_, exists := os.LookupEnv(r)
-		if !exists {
-			logrus.Fatalf("Missing environment variable %s.\n", r)
+		if _, ok := os.LookupEnv(r); !ok {
+			missing = append(missing, r)
 		}
 	}
-}
 
-func preparePod() {
-	_, statErr := os.Stat(common.PathScriptPreparePod)
-	if statErr != nil && os.IsNotExist(statErr) {
-		logrus.Infof("Executable %s doesn't exist. Skip preparing the pod.\n", common.PathScriptPreparePod)
-		return
+	if len(missing) > 0 {
+		builder := &bytes.Buffer{}
+		builder.WriteString("the following required environment variables are missing:\n")
+		for _, entry := range missing {
+			builder.WriteRune('\t')
+			builder.WriteString(entry)
+			builder.WriteRune('\n')
+		}
+
+		return errors.New(builder.String())
 	}
 
-	output, err := exec.Command(common.PathScriptPreparePod).CombinedOutput()
-	if err != nil {
-		logrus.Fatalf("Fail to prepare the pod: %s.\n%s\n", err, string(output))
-	}
-	logrus.Infof("Preparing Pod: \n%s\n", string(output))
-}
-
-func afterTask(taskResult *models.TaskResult) error {
-	_, err := os.Stat(common.PathScriptAfterTest)
-	if err != nil && os.IsNotExist(err) {
-		// Missing after task executable is not considered an error.
-		return nil
-	}
-
-	logrus.Infof("Executing after task %s.", common.PathScriptAfterTest)
-
-	taskInBytes, err := json.Marshal(taskResult)
-	if err != nil {
-		return fmt.Errorf("unable to encode task to JSON: %s", err.Error())
-	}
-
-	output, err := exec.Command(
-		common.PathScriptAfterTest,
-		common.PathMountArtifacts,
-		string(taskInBytes),
-	).CombinedOutput()
-
-	if err != nil {
-		return fmt.Errorf("execution failed: %s", err.Error())
-	}
-
-	logrus.Infof("After task executed. %s.", string(output))
 	return nil
 }
 
 func main() {
-	logrus.Infof("A01 Droid Engine.\nVersion: %s.\nCommit: %s.\n", version, sourceCommit)
-	logrus.Infof("Run ID: %s", runID)
+	ctx := context.Background()
+	logger := logrus.StandardLogger()
 
-	ckEnvironment()
+	logger.Infof("A01 Droid Engine\n\tVersion: %s\n\tCommit: %s", version, sourceCommit)
+
+	err := ckEnvironment()
+	if err != nil {
+		logger.Fatal(err)
+	}
+
+	jobName := os.Getenv(common.EnvJobName)
+	productName, runID, err := splitJobName(jobName)
+	if err != nil {
+		logger.Fatal(err)
+	}
+
+	logger.Infof("Run ID: %s", runID)
+
+	taskBroker, err := schedule.CreateInClusterTaskBroker()
+	if err != nil {
+		logger.Fatal(err)
+	}
 
 	queue, ch, err := taskBroker.QueueDeclare(jobName)
 	if err != nil {
-		logrus.Fatal("Failed to connect to the task broker.")
+		logger.Fatal("Failed to connect to the task broker.")
 	}
 
 	if bLogPathTemplate, exists := kubeutils.TryGetSecretInBytes(
@@ -97,16 +111,17 @@ func main() {
 		logPathTemplate = string(bLogPathTemplate)
 	}
 
-	preparePod()
+	// If pod prep fails, preparePod will terminate the program
+	preparePod(ctx, logrus.StandardLogger(), common.PathScriptPreparePod)
 
 	for {
 		delivery, ok, err := ch.Get(queue.Name, false /* autoAck*/)
 		if err != nil {
-			logrus.Fatal("Failed to get a delivery: ", err)
+			logger.Fatal("Failed to get a delivery: ", err)
 		}
 
 		if !ok {
-			logrus.Info("No more task in the queue. Exiting successfully.")
+			logger.Info("No more task in the queue. Exiting successfully.")
 			break
 		}
 
@@ -129,17 +144,14 @@ func main() {
 
 		taskResult, err = taskResult.CommitNew()
 		if err != nil {
-			logrus.Errorf("Failed to commit a new task: %s.", err.Error())
+			logrus.Errorf("Failed to commit a new task: %v", err)
 		} else {
 			taskLogPath, err := taskResult.SaveTaskLog(output)
 			if err != nil {
 				logrus.Error(err)
 			}
 
-			err = afterTask(taskResult)
-			if err != nil {
-				logrus.Errorf("Failed in after task: %s.", err.Error())
-			}
+			afterTask(ctx, logger, common.PathScriptAfterTest, taskResult)
 
 			if len(logPathTemplate) > 0 {
 				taskResult.ResultDetails[common.KeyTaskLogPath] = strings.Replace(
@@ -163,9 +175,100 @@ func main() {
 
 		err = delivery.Ack(false)
 		if err != nil {
-			logrus.Errorf("Failed to ack delivery: %s", err.Error())
+			logrus.Errorf("Failed to ack delivery: %v", err)
 		} else {
 			logrus.Info("ACK")
+		}
+	}
+}
+
+// splitJobName breaks down a jonName string adhering to a known format into its composing elements.
+//
+// Note: It is structured as a variable instead of a normal function in order to allow closure to essentially create a
+// locally scoped regular expression that gets compiled exactly once at program initialization time instead of panicking
+// only when a program needs a jobID for the first time. This should make literally any integration test fail if this
+// becomes an invalid regular expression.
+var splitJobName = func() func(string) (string, string, error) {
+	jobNamePattern := regexp.MustCompile(`^(?P<product>.+)-(?P<runID>.+)-(?P<randomID>.+)$`)
+
+	return func(jobName string) (productName, runID string, err error) {
+		results := jobNamePattern.FindStringSubmatch(jobName)
+		if results == nil {
+			err = fmt.Errorf("%q is not in format <product>-<runID>-<randomID>", jobName)
+			return
+		}
+
+		productName, runID = results[1], results[2]
+		return
+	}
+}()
+
+// preparePod executes a file while logging. The language used for logging assumes that this will be executed exactly
+// once as an initialization step before entering the task loop.
+func preparePod(ctx context.Context, logger *logrus.Logger, prepPath string) {
+	_, err := os.Stat(prepPath)
+	if os.IsNotExist(err) {
+		logger.Infof("skipping pod preparation, %s not present", prepPath)
+	}
+
+	output := &bytes.Buffer{}
+	cmd := exec.CommandContext(ctx, prepPath)
+	cmd.Stdout = output
+	cmd.Stderr = output
+	err = cmd.Run()
+
+	if err == nil {
+		const affirmative = "pod prepared"
+		if output.Len() > 0 {
+			logger.Info(affirmative + " output:\n" + output.String())
+		} else {
+			logger.Info(affirmative)
+		}
+	} else {
+		const negative = "pod preparation failed\n\terr: %v"
+		if output.Len() > 0 {
+			logger.Fatalf(negative+"\n\toutput:\n%s", err, output.String())
+		} else {
+			logger.Fatalf(negative, err)
+		}
+	}
+}
+
+func afterTask(ctx context.Context, logger *logrus.Logger, afterPath string, taskResult *models.TaskResult) {
+	_, err := os.Stat(afterPath)
+	if os.IsNotExist(err) {
+		logger.Info("no after task action found")
+		// Missing after task executable is not considered an error.
+		return
+	}
+
+	logrus.Infof("Executing after task %s.", common.PathScriptAfterTest)
+
+	taskInBytes, err := json.Marshal(taskResult)
+	if err != nil {
+		logger.Errorf("unable to encode task to JSON: %s", err.Error())
+		return
+	}
+
+	outBuf := &bytes.Buffer{}
+	cmd := exec.CommandContext(ctx, afterPath, common.PathMountArtifacts, string(taskInBytes))
+	cmd.Stdout = outBuf
+	cmd.Stderr = outBuf
+
+	err = cmd.Run()
+	if err == nil {
+		const affirmative = "after-task succeeded"
+		if outBuf.Len() > 0 {
+			logger.Info(affirmative + " output:\n" + outBuf.String())
+		} else {
+			logger.Info(affirmative)
+		}
+	} else {
+		const negative = "after-task failed\n\terr: %v"
+		if outBuf.Len() > 0 {
+			logger.Errorf(negative+"\n\toutput:\n%s", err, outBuf.String())
+		} else {
+			logger.Errorf(negative, err)
 		}
 	}
 }

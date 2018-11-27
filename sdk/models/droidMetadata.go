@@ -1,10 +1,8 @@
 package models
 
 import (
+	"gopkg.in/yaml.v2"
 	"io/ioutil"
-	"log"
-
-	yaml "gopkg.in/yaml.v2"
 )
 
 // DroidMetadata defines the data model used in metadata.yml
@@ -30,21 +28,18 @@ type DroidMetadataEnvDef struct {
 	Value string `yaml:"value"`
 }
 
-// ReadDroidMetadata reads the droid metadata from the metadata.yml file. Returns nil if the file is missing or the
-// JSON unmarshal failed.
-func ReadDroidMetadata(filePath string) *DroidMetadata {
+// ReadDroidMetadata reads the droid metadata from the metadata.yml file.
+func ReadDroidMetadata(filePath string) (*DroidMetadata, error) {
 	content, err := ioutil.ReadFile(filePath)
 	if err != nil {
-		log.Printf("Fail to read %s.\n", filePath)
-		return nil
+		return nil, err
 	}
 
 	var metadata DroidMetadata
 	err = yaml.Unmarshal(content, &metadata)
 	if err != nil {
-		log.Printf("Fail to JSON unmarshal content from %s.\n", filePath)
-		return nil
+		return nil, err
 	}
 
-	return &metadata
+	return &metadata, nil
 }

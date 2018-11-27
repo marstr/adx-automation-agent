@@ -2,6 +2,7 @@ package schedule
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/Azure/adx-automation-agent/sdk/common"
 	"github.com/Azure/adx-automation-agent/sdk/kubeutils"
@@ -142,35 +143,36 @@ func CreateLocalTaskBroker() *TaskBroker {
 }
 
 // CreateInClusterTaskBroker returns a in-cluster task broker instance
-func CreateInClusterTaskBroker() *TaskBroker {
-	endpoint, exists := kubeutils.TryGetSystemConfig(common.ConfigKeyEndpointTaskBroker)
-	if !exists {
-		logrus.Fatal("Fail to fetch taskbroker's endpoint from system config.")
+func CreateInClusterTaskBroker() (*TaskBroker, error) {
+	endpoint, ok := kubeutils.TryGetSystemConfig(common.ConfigKeyEndpointTaskBroker)
+	if !ok {
+		return nil, errors.New("taskbroker's endpoint did not exist in system config")
 	}
 
-	username, exists := kubeutils.TryGetSystemConfig(common.ConfigKeyUsernameTaskBroker)
-	if !exists {
-		logrus.Fatal("Fail to fetch taskbroker's user name from system config.")
+	username, ok := kubeutils.TryGetSystemConfig(common.ConfigKeyUsernameTaskBroker)
+	if !ok {
+		return nil, errors.New("taskbroker's user name did not exist in system config")
 	}
 
-	secretName, exists := kubeutils.TryGetSystemConfig(common.ConfigKeySecretTaskBroker)
-	if !exists {
-		logrus.Fatal("Fail to fetch taskbroker's secret name from system config.")
+	secretName, ok := kubeutils.TryGetSystemConfig(common.ConfigKeySecretTaskBroker)
+	if !ok {
+		return nil, errors.New("taskbroker's secret name did not exist in system config")
 	}
 
-	passwordKey, exists := kubeutils.TryGetSystemConfig(common.ConfigKeyPasswordKeyTaskBroker)
-	if !exists {
-		logrus.Fatal("Fail to fetch taskbroker's password key name from system config.")
+	passwordKey, ok := kubeutils.TryGetSystemConfig(common.ConfigKeyPasswordKeyTaskBroker)
+	if !ok {
+		return nil, errors.New("taskbroker's password key did not exist in system config")
 	}
 
-	passwordInBytes, exists := kubeutils.TryGetSecretInBytes(secretName, passwordKey)
-	if !exists {
-		logrus.Fatalf("Fail to fetch taskbroker's password from secret %s using key %s.", secretName, passwordKey)
+	passwordInBytes, ok := kubeutils.TryGetSecretInBytes(secretName, passwordKey)
+	if !ok {
+		const errFormat = "taskbroker's password could not be fetched using secret %q and key %q"
+		return nil, fmt.Errorf(errFormat, secretName, passwordKey)
 	}
 
 	password := string(passwordInBytes)
 
 	return &TaskBroker{
 		ConnectionName: fmt.Sprintf("amqp://%s:%s@%s:5672", username, password, endpoint),
-	}
+	}, nil
 }
