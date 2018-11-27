@@ -40,17 +40,9 @@ func CreateKubeClientset() (clientset *kubernetes.Clientset, err error) {
 	return
 }
 
-// TryCreateKubeClientset creates a new kubernetes clientset. If it fails return nil
-func TryCreateKubeClientset() *kubernetes.Clientset {
-	if client, err := CreateKubeClientset(); err == nil {
-		return client
-	}
-	return nil
-}
-
 // TryGetSystemConfig retrieves the value of given key in a01 system config.
 func TryGetSystemConfig(key string) (value string, exists bool) {
-	clientset := TryCreateKubeClientset()
+	clientset, err := CreateKubeClientset()
 	if clientset == nil {
 		return "", false
 	}
@@ -71,7 +63,7 @@ func TryGetSystemConfig(key string) (value string, exists bool) {
 
 // TryGetSecretInBytes retrieves the value of given key in the given secret in current namespace.
 func TryGetSecretInBytes(secret string, key string) (value []byte, exists bool) {
-	clientset := TryCreateKubeClientset()
+	clientset, err := CreateKubeClientset()
 	if clientset == nil {
 		return nil, false
 	}

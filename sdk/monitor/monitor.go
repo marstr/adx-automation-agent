@@ -5,25 +5,20 @@ import (
 	"github.com/sirupsen/logrus"
 	"time"
 
-	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-
 	"github.com/Azure/adx-automation-agent/sdk/common"
-	"github.com/Azure/adx-automation-agent/sdk/kubeutils"
 	"github.com/Azure/adx-automation-agent/sdk/models"
 	"github.com/Azure/adx-automation-agent/sdk/schedule"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
 )
 
 const (
 	interval = time.Second * 30
 )
 
-var (
-	clientset = kubeutils.TryCreateKubeClientset()
-)
-
 // WaitTasks blocks the caller till the job finishes.
-func WaitTasks(namespace string, taskBroker *schedule.TaskBroker, run *models.Run) error {
+func WaitTasks(clientset *kubernetes.Clientset, namespace string, taskBroker *schedule.TaskBroker, run *models.Run) error {
 	logrus.Info("Begin monitoring task execution ...")
 
 	ch, err := taskBroker.GetChannel()

@@ -22,7 +22,6 @@ import (
 )
 
 var (
-	clientset    = kubeutils.TryCreateKubeClientset()
 	version      = "Unknown"
 	sourceCommit = "Unknown"
 )
@@ -35,6 +34,8 @@ var (
 func main() {
 	logrus.Infof("A01 Droid Dispatcher.\nVersion: %s.\nCommit: %s.\n", version, sourceCommit)
 	logrus.Infof("Pod name: %s", os.Getenv(common.EnvPodName))
+
+	clientset, _ := kubeutils.CreateKubeClientset()
 
 	taskBroker, err := schedule.CreateInClusterTaskBroker()
 	if err != nil {
@@ -127,9 +128,9 @@ func main() {
 
 	if run.Status == common.RunStatusRunning {
 		// begin monitoring the job status till the end
-		monitor.WaitTasks(namespace, taskBroker, run)
+		monitor.WaitTasks(clientset, namespace, taskBroker, run)
 
-		secret, err := kubeutils.TryCreateKubeClientset().
+		secret, err := clientset.
 			CoreV1().
 			Secrets(namespace).
 			Get(run.GetSecretName(droidMetadata), metav1.GetOptions{})
